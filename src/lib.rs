@@ -76,6 +76,20 @@ pub fn find_single_byte_key(input: &Vec<u8>, freqs: &LangMap) -> (Vec<u8>, u8, f
     )
 }
 
+pub fn repeated_key_xor<'a>(
+    plain_text: &[u8],
+    key: &[u8],
+    result: &'a mut Vec<u8>,
+) -> &'a mut Vec<u8> {
+    result.resize(plain_text.len(), 0);
+
+    for (idx, val) in plain_text.iter().enumerate() {
+        result[idx] = val ^ key[idx % key.len()];
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -137,7 +151,32 @@ mod tests {
             "{}: ({}) => {:?}",
             max_line_score.0,
             max_line_score.1,
-            String::from_utf8(max_line_score.2.to_vec()).unwrap_or(String::from("<invalid utf8>"))
+            String::from_utf8(max_line_score.2.clone()).unwrap_or("<invalid utf8>".into())
+        );
+        assert!(max_line_score.0 == 170);
+        assert!("Now that the party is jumping\n".as_bytes() == max_line_score.2)
+    }
+
+    #[test]
+    fn challenge5() {
+        let plaintext = b"Burning 'em, if you ain't quick and nimble
+I go crazy when I hear a cymbal";
+        let key = b"ICE";
+        let mut ciphertext = vec![0u8; plaintext.len()];
+        let ciphertext = repeated_key_xor(
+            plaintext,
+            key,
+            &mut ciphertext,
+        );
+
+        assert_eq!(
+            *ciphertext,
+            hex::decode(
+                "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272\
+a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
+            )
+            .unwrap()
         )
     }
+
 }
