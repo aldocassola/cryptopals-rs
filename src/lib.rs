@@ -6,7 +6,7 @@ pub fn hex_to_base64(input: &str) -> String {
     BASE64_STANDARD.encode(hex::decode(input).unwrap_or(vec![]))
 }
 
-pub fn xor(left_bytes: &Vec<u8>, right_bytes: &Vec<u8>) -> Vec<u8> {
+pub fn xor(left_bytes: &[u8], right_bytes: &[u8]) -> Vec<u8> {
     if left_bytes.len() != right_bytes.len() {
         panic!("uneven strings")
     }
@@ -33,7 +33,7 @@ pub fn make_lang_map<B: Read>(rd: &mut B, sz: u64) -> LangMap {
         .collect::<LangMap>()
 }
 
-pub fn count_freqs(input: &Vec<u8>) -> LangMap {
+pub fn count_freqs(input: &[u8]) -> LangMap {
     let mut hash_counts: HashMap<u8, i64> = HashMap::new();
     for letter in input {
         hash_counts
@@ -48,7 +48,7 @@ pub fn count_freqs(input: &Vec<u8>) -> LangMap {
         .collect::<LangMap>()
 }
 
-pub fn score(input: &Vec<u8>, freqs: &LangMap) -> f64 {
+pub fn score(input: &[u8], freqs: &LangMap) -> f64 {
     input
         .iter()
         .map(|letter| freqs.get(letter).unwrap_or(&0f64))
@@ -56,7 +56,7 @@ pub fn score(input: &Vec<u8>, freqs: &LangMap) -> f64 {
         / input.len() as f64
 }
 
-pub fn find_single_byte_key(input: &Vec<u8>, freqs: &LangMap) -> (Vec<u8>, u8, f64) {
+pub fn find_single_byte_key(input: &[u8], freqs: &LangMap) -> (Vec<u8>, u8, f64) {
     let mut max: (f64, i32) = (0f64, -1);
 
     for key in 0..255 {
