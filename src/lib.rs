@@ -90,6 +90,16 @@ pub fn repeated_key_xor<'a>(
     result
 }
 
+pub fn hamming_distance(left: &[u8], right: &[u8]) -> usize {
+    assert_eq!(left.len(), right.len());
+    assert!(left.len() < 2usize.pow(29));
+
+    xor(left, right)
+        .iter()
+        .map(|diff| diff.count_ones() as usize)
+        .fold(0, |acc, val| acc + val)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -177,6 +187,13 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
             )
             .unwrap()
         )
+    }
+
+    #[test]
+    fn challenge6() {
+        let s1 = "this is a test";
+        let s2 = "wokka wokka!!!";
+        assert_eq!(hamming_distance(s1.as_bytes(), s2.as_bytes()), 37);
     }
 
 }
