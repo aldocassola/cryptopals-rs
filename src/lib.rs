@@ -2,7 +2,8 @@ use base64::prelude::*;
 use hex;
 use std::{
     collections::{BinaryHeap, HashMap},
-    io::Read,
+    fs::File,
+    io::{BufRead, Read},
 };
 
 pub fn hex_to_base64(input: &str) -> String {
@@ -157,6 +158,20 @@ pub fn make_key_length_distance(input: &[u8]) -> LengthDistVec {
     heap.into_sorted_vec()
 }
 
+pub fn read_b64_lines(filename: &str) -> Vec<u8> {
+    let mut b64encrypted = Vec::<u8>::new();
+    File::open(filename)
+        .unwrap()
+        .read_to_end(&mut b64encrypted)
+        .unwrap();
+    BASE64_STANDARD
+        .decode(&b64encrypted.lines().fold(Vec::<u8>::new(), |mut vec, ln| {
+            vec.append(&mut ln.unwrap().into_bytes());
+            vec
+        }))
+        .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -251,17 +266,7 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
         let s1 = "this is a test";
         let s2 = "wokka wokka!!!";
         assert_eq!(hamming_distance(s1.as_bytes(), s2.as_bytes()), 37);
-        let mut b64encrypted = Vec::<u8>::new();
-        File::open("testdata/6.txt")
-            .unwrap()
-            .read_to_end(&mut b64encrypted)
-            .unwrap();
-        let ciphertext = BASE64_STANDARD
-            .decode(&b64encrypted.lines().fold(Vec::<u8>::new(), |mut vec, ln| {
-                vec.append(&mut ln.unwrap().into_bytes());
-                vec
-            }))
-            .unwrap();
+        let ciphertext = read_b64_lines("testdata/6.txt");
         let weights = make_key_length_distance(&ciphertext);
         println!("Weights: {:?}", weights);
 
@@ -291,4 +296,7 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
             }
         }
     }
+
+    #[test]
+    fn challenge7() {}
 }
