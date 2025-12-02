@@ -1,6 +1,9 @@
 use base64::prelude::*;
 use hex;
-use std::{collections::HashMap, io::Read};
+use std::{
+    collections::{BinaryHeap, HashMap},
+    io::Read,
+};
 
 pub fn hex_to_base64(input: &str) -> String {
     BASE64_STANDARD.encode(hex::decode(input).unwrap_or(vec![]))
@@ -100,6 +103,60 @@ pub fn hamming_distance(left: &[u8], right: &[u8]) -> usize {
         .fold(0, |acc, val| acc + val)
 }
 
+#[derive(Debug)]
+pub struct LengthDist {
+    norm_dist: f64,
+    length: usize,
+}
+
+impl PartialOrd for LengthDist {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.norm_dist.partial_cmp(&other.norm_dist)
+    }
+}
+
+impl Ord for LengthDist {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.norm_dist.partial_cmp(&other.norm_dist).unwrap()
+    }
+}
+
+impl PartialEq for LengthDist {
+    fn eq(&self, other: &Self) -> bool {
+        self.norm_dist == other.norm_dist
+    }
+}
+
+impl Eq for LengthDist {}
+
+type LengthDistVec = Vec<LengthDist>;
+
+pub fn make_key_length_distance(input: &[u8]) -> LengthDistVec {
+    let max_key_len = 40;
+    let data_to_key_ratio = input.len() as f64 / max_key_len as f64;
+    let nblocks = if 20f64 < data_to_key_ratio {
+        20
+    } else {
+        data_to_key_ratio as usize
+    };
+    let mut heap = BinaryHeap::<LengthDist>::new();
+
+    for key_len in 2..max_key_len {
+        if key_len * 2 > input.len() {
+            return heap.into();
+        }
+
+        let block1 = &input[0..key_len * nblocks];
+        let block2 = &input[key_len * nblocks..2 * key_len * nblocks];
+        heap.push(LengthDist {
+            norm_dist: hamming_distance(block1, block2) as f64 / (key_len * nblocks) as f64,
+            length: key_len,
+        });
+    }
+
+    heap.into_sorted_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -108,6 +165,12 @@ mod tests {
     };
 
     use super::*;
+
+    fn make_english_map() -> LangMap {
+        let corpus_file = File::open("testdata/huckleberry.txt").unwrap();
+        let corpus_len = corpus_file.metadata().unwrap().len();
+        make_lang_map(&mut BufReader::new(corpus_file), corpus_len)
+    }
 
     #[test]
     fn challenge1() {
@@ -143,9 +206,7 @@ mod tests {
     #[test]
     fn challenge4() {
         let encrypted_strings = File::open("testdata/4.txt").unwrap();
-        let corpus_file = File::open("testdata/huckleberry.txt").unwrap();
-        let corpus_len = corpus_file.metadata().unwrap().len();
-        let english_map = make_lang_map(&mut BufReader::new(corpus_file), corpus_len);
+        let english_map = make_english_map();
         let mut max_line_score: (i32, f64, Vec<u8>) = (-1, 0f64, vec![]);
 
         for (lnum, line) in BufReader::new(encrypted_strings).lines().enumerate() {
@@ -173,11 +234,7 @@ mod tests {
 I go crazy when I hear a cymbal";
         let key = b"ICE";
         let mut ciphertext = vec![0u8; plaintext.len()];
-        let ciphertext = repeated_key_xor(
-            plaintext,
-            key,
-            &mut ciphertext,
-        );
+        let ciphertext = repeated_key_xor(plaintext, key, &mut ciphertext);
 
         assert_eq!(
             *ciphertext,
@@ -194,6 +251,44 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
         let s1 = "this is a test";
         let s2 = "wokka wokka!!!";
         assert_eq!(hamming_distance(s1.as_bytes(), s2.as_bytes()), 37);
-    }
+        let mut b64encrypted = Vec::<u8>::new();
+        File::open("testdata/6.txt")
+            .unwrap()
+            .read_to_end(&mut b64encrypted)
+            .unwrap();
+        let ciphertext = BASE64_STANDARD
+            .decode(&b64encrypted.lines().fold(Vec::<u8>::new(), |mut vec, ln| {
+                vec.append(&mut ln.unwrap().into_bytes());
+                vec
+            }))
+            .unwrap();
+        let weights = make_key_length_distance(&ciphertext);
+        println!("Weights: {:?}", weights);
 
+        let english_map = make_english_map();
+        let mut trial_plaintexts: Vec<String> = vec![];
+        for w in weights[0..1].iter() {
+            let key_len = w.length;
+            let mut chunks: Vec<Vec<u8>> = vec![vec![]; key_len];
+            for (idx, byt) in ciphertext.iter().enumerate() {
+                chunks[idx % key_len].push(*byt);
+            }
+
+            let mut key: Vec<u8> = Vec::new();
+            for (key_idx, _chunk) in chunks.iter().enumerate() {
+                let (_out, kb, _) = find_single_byte_key(&chunks[key_idx], &english_map);
+                key.push(kb);
+            }
+
+            let mut buf: Vec<u8> = vec![];
+            let trial_decrypt = repeated_key_xor(&ciphertext, &key, &mut buf);
+            match String::from_utf8(trial_decrypt.to_vec()).ok() {
+                Some(plaintext) => {
+                    println!("{:?} yielded {}", w, plaintext);
+                    trial_plaintexts.push(plaintext);
+                }
+                None => println!("{:?} failed", w),
+            }
+        }
+    }
 }
