@@ -114,6 +114,12 @@ pub struct LengthDist {
     length: usize,
 }
 
+impl LengthDist {
+    pub fn len(&self) -> usize {
+        self.length
+    }
+}
+
 impl PartialOrd for LengthDist {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.norm_dist.partial_cmp(&other.norm_dist)
@@ -206,6 +212,13 @@ pub fn aes_ecb_decrypt(ciphertext: &[u8]) -> Vec<u8> {
         .map(|arr| Vec::<u8>::from(arr.as_slice()))
         .flatten()
         .collect()
+}
+
+pub fn pad_pkcs7<const BLOCKSIZE: usize>(input: &mut Vec<u8>) -> &mut Vec<u8> {
+    let padding_length = BLOCKSIZE - input.len() % BLOCKSIZE;
+    let mut pad = vec![padding_length as u8; padding_length];
+    input.append(&mut pad);
+    input
 }
 
 #[cfg(test)]
@@ -365,5 +378,13 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
                 }
             }
         }
+    }
+
+    #[test]
+    fn challenge9() {
+        let mut sub = Vec::from("YELLOW SUBMARINE");
+        let expected = Vec::from("YELLOW SUBMARINE\x04\x04\x04\x04");
+        const LEN: usize = 20;
+        assert_eq!(expected, *pad_pkcs7::<LEN>(&mut sub));
     }
 }
