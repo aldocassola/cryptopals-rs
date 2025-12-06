@@ -1,3 +1,7 @@
+use aes::{
+    Aes128Dec,
+    cipher::{BlockDecrypt, Key, KeyInit, generic_array::GenericArray},
+};
 use base64::prelude::*;
 use hex;
 use std::{
@@ -172,6 +176,24 @@ pub fn read_b64_lines(filename: &str) -> Vec<u8> {
         .unwrap()
 }
 
+pub fn aes_ecb_decrypt(ciphertext: &[u8]) -> Vec<u8> {
+    const BLOCKSIZE: usize = 16;
+    let mut blocks = (0..ciphertext.len())
+        .filter_map(|idx| match idx % BLOCKSIZE {
+            0 => Some(*GenericArray::from_slice(&ciphertext[idx..idx + BLOCKSIZE])),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let key = Key::<Aes128Dec>::from_slice(b"YELLOW SUBMARINE");
+    let cipher = Aes128Dec::new(key);
+    cipher.decrypt_blocks(&mut blocks);
+    blocks
+        .iter()
+        .map(|arr| Vec::<u8>::from(arr.as_slice()))
+        .flatten()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -298,5 +320,9 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
     }
 
     #[test]
-    fn challenge7() {}
+    fn challenge7() {
+        let ciphertext = read_b64_lines("testdata/7.txt");
+        let blocks = aes_ecb_decrypt(&ciphertext);
+        println!("{}", String::from_utf8(blocks).unwrap());
+    }
 }
