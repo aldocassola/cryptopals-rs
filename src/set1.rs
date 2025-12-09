@@ -1,6 +1,6 @@
 use aes::{
-    Aes128Dec,
-    cipher::{BlockDecrypt, Key, KeyInit, generic_array::GenericArray},
+    Aes128, Aes128Dec,
+    cipher::{BlockDecrypt, BlockEncrypt, Key, KeyInit, generic_array::GenericArray},
 };
 use base64::prelude::*;
 use hex;
@@ -14,16 +14,23 @@ pub fn hex_to_base64(input: &str) -> String {
     BASE64_STANDARD.encode(hex::decode(input).unwrap_or(vec![]))
 }
 
-pub fn xor(left_bytes: &[u8], right_bytes: &[u8]) -> Vec<u8> {
+pub fn xor_mut<'a>(left_bytes: &'a mut [u8], right_bytes: &[u8]) -> &'a mut [u8] {
     if left_bytes.len() != right_bytes.len() {
         panic!("uneven strings")
     }
 
+    for (l, r) in left_bytes.iter_mut().zip(right_bytes.iter()) {
+        *l = *l ^ *r;
+    }
+    left_bytes
+}
+
+pub fn xor(left_bytes: &[u8], right_bytes: &[u8]) -> Vec<u8> {
     left_bytes
         .iter()
-        .zip(right_bytes.iter())
+        .zip(right_bytes)
         .map(|(l, r)| l ^ r)
-        .collect::<Vec<_>>()
+        .collect()
 }
 
 type LangMap = HashMap<u8, f64>;
@@ -68,8 +75,8 @@ pub fn find_single_byte_key(input: &[u8], freqs: &LangMap) -> (Vec<u8>, u8, f64)
     let mut max: (f64, i32) = (0f64, -1);
 
     for key in 0..255 {
-        let xor_pad = vec![key as u8; input.len()];
-        let trial = xor(&input, &xor_pad);
+        let mut xor_pad = vec![key as u8; input.len()];
+        let trial = xor(&mut xor_pad, &input);
 
         let score = score(&trial, &freqs);
         if score > max.0 {
@@ -195,14 +202,12 @@ pub fn read_hex_lines(filename: &str) -> Vec<Vec<u8>> {
         .collect::<Vec<_>>()
 }
 
-const BLOCKSIZE: usize = 16;
+const AES_BLOCKSIZE: usize = 16;
 
 pub fn aes_ecb_decrypt(ciphertext: &[u8]) -> Vec<u8> {
     let mut blocks = (0..ciphertext.len())
-        .filter_map(|idx| match idx % BLOCKSIZE {
-            0 => Some(*GenericArray::from_slice(&ciphertext[idx..idx + BLOCKSIZE])),
-            _ => None,
-        })
+        .step_by(AES_BLOCKSIZE)
+        .map(|idx| *GenericArray::from_slice(&ciphertext[idx..idx + AES_BLOCKSIZE]))
         .collect::<Vec<_>>();
     let key = Key::<Aes128Dec>::from_slice(b"YELLOW SUBMARINE");
     let cipher = Aes128Dec::new(key);
@@ -219,6 +224,85 @@ pub fn pad_pkcs7<const BLOCKSIZE: usize>(input: &mut Vec<u8>) -> &mut Vec<u8> {
     let mut pad = vec![padding_length as u8; padding_length];
     input.append(&mut pad);
     input
+}
+
+pub fn unpad_pkcs7<const BLOCKSIZE: usize>(
+    input: &mut Vec<u8>,
+) -> Result<&mut Vec<u8>, &'static str> {
+    let mut check_good = input.len() % AES_BLOCKSIZE == 0;
+
+    if input.len() < 32 {
+        check_good = false;
+    }
+
+    let last_block = &input[input.len() - AES_BLOCKSIZE..];
+    let last_byte = last_block[AES_BLOCKSIZE - 1];
+    check_good = check_good && last_byte <= 16;
+    let maybe_pad = &last_block[AES_BLOCKSIZE - last_byte as usize..];
+    let all_bytes = maybe_pad.iter().all(|e| *e == last_byte);
+
+    if !check_good || !all_bytes {
+        return Err("pkcs7 failed");
+    }
+
+    input.resize(input.len() - maybe_pad.len(), 0);
+    Ok(input)
+}
+
+pub fn cbc_encrypt<'a>(
+    cipher: Aes128,
+    iv: &[u8; AES_BLOCKSIZE],
+    plaintext: &'a mut Vec<u8>,
+) -> Result<&'a mut Vec<u8>, &'static str> {
+    if plaintext.len() < 2 * AES_BLOCKSIZE || plaintext.len() % AES_BLOCKSIZE != 0 {
+        return Err("cbc encrypt failed");
+    }
+
+    let mut last_ciphertext = *iv;
+
+    for idx in (0..plaintext.len()).step_by(AES_BLOCKSIZE) {
+        let mut cur_block: [u8; AES_BLOCKSIZE] = [0; AES_BLOCKSIZE];
+        for i in 0..AES_BLOCKSIZE {
+            cur_block[i] = plaintext[idx + i];
+        }
+
+        xor_mut(&mut cur_block, &last_ciphertext);
+        cipher.encrypt_block(&mut cur_block.into());
+
+        for i in 0..AES_BLOCKSIZE {
+            plaintext[idx + i] = cur_block[i];
+        }
+        last_ciphertext = cur_block;
+    }
+
+    Ok(plaintext)
+}
+
+pub fn cbc_decrypt<'a>(
+    cipher: Aes128,
+    iv: &[u8; AES_BLOCKSIZE],
+    ciphertext: &'a mut Vec<u8>,
+) -> Result<&'a mut Vec<u8>, &'static str> {
+    if ciphertext.len() < 2 * AES_BLOCKSIZE || ciphertext.len() % AES_BLOCKSIZE != 0 {
+        return Err("cbc decrypt failed");
+    }
+
+    let mut last_plaintext: [u8; AES_BLOCKSIZE] = *iv;
+    for idx in (0..ciphertext.len()).step_by(AES_BLOCKSIZE) {
+        let mut cur_block: [u8; AES_BLOCKSIZE] = [0; AES_BLOCKSIZE];
+        for i in 0..AES_BLOCKSIZE {
+            cur_block[i] = ciphertext[idx + i];
+        }
+        cipher.decrypt_block(&mut cur_block.into());
+        xor_mut(&mut cur_block, &last_plaintext);
+        for i in 0..AES_BLOCKSIZE {
+            ciphertext[idx + i] = cur_block[i];
+        }
+
+        last_plaintext = cur_block;
+    }
+
+    Ok(ciphertext)
 }
 
 #[cfg(test)]
@@ -360,8 +444,8 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
         let lines = read_hex_lines("testdata/8.txt");
 
         for (lnum, line) in lines.iter().enumerate() {
-            for idx in (0..line.len()).step_by(BLOCKSIZE) {
-                let v = &line[idx..idx + BLOCKSIZE];
+            for idx in (0..line.len()).step_by(AES_BLOCKSIZE) {
+                let v = &line[idx..idx + AES_BLOCKSIZE];
                 match block_map.get(v) {
                     Some(lnum) => {
                         println!(
