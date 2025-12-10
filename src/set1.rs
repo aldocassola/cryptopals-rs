@@ -1,6 +1,6 @@
 use aes::{
-    Aes128, Aes128Dec,
-    cipher::{BlockDecrypt, BlockEncrypt, Key, KeyInit, generic_array::GenericArray},
+    Aes128,
+    cipher::{BlockDecrypt, BlockEncrypt, generic_array::GenericArray, typenum},
 };
 use base64::prelude::*;
 use hex;
@@ -204,13 +204,11 @@ pub fn read_hex_lines(filename: &str) -> Vec<Vec<u8>> {
 
 const AES_BLOCKSIZE: usize = 16;
 
-pub fn aes_ecb_decrypt(ciphertext: &[u8]) -> Vec<u8> {
+pub fn aes_ecb_decrypt(cipher: &Aes128, ciphertext: &[u8]) -> Vec<u8> {
     let mut blocks = (0..ciphertext.len())
         .step_by(AES_BLOCKSIZE)
         .map(|idx| *GenericArray::from_slice(&ciphertext[idx..idx + AES_BLOCKSIZE]))
         .collect::<Vec<_>>();
-    let key = Key::<Aes128Dec>::from_slice(b"YELLOW SUBMARINE");
-    let cipher = Aes128Dec::new(key);
     cipher.decrypt_blocks(&mut blocks);
     blocks
         .iter()
@@ -231,7 +229,7 @@ pub fn unpad_pkcs7<const BLOCKSIZE: usize>(
 ) -> Result<&mut Vec<u8>, &'static str> {
     let mut check_good = input.len() % AES_BLOCKSIZE == 0;
 
-    if input.len() < 32 {
+    if input.len() < AES_BLOCKSIZE {
         check_good = false;
     }
 
@@ -250,56 +248,46 @@ pub fn unpad_pkcs7<const BLOCKSIZE: usize>(
 }
 
 pub fn cbc_encrypt<'a>(
-    cipher: Aes128,
+    cipher: &Aes128,
     iv: &[u8; AES_BLOCKSIZE],
     plaintext: &'a mut Vec<u8>,
 ) -> Result<&'a mut Vec<u8>, &'static str> {
-    if plaintext.len() < 2 * AES_BLOCKSIZE || plaintext.len() % AES_BLOCKSIZE != 0 {
+    if plaintext.len() < AES_BLOCKSIZE || plaintext.len() % AES_BLOCKSIZE != 0 {
         return Err("cbc encrypt failed");
     }
 
     let mut last_ciphertext = *iv;
 
     for idx in (0..plaintext.len()).step_by(AES_BLOCKSIZE) {
-        let mut cur_block: [u8; AES_BLOCKSIZE] = [0; AES_BLOCKSIZE];
-        for i in 0..AES_BLOCKSIZE {
-            cur_block[i] = plaintext[idx + i];
-        }
-
-        xor_mut(&mut cur_block, &last_ciphertext);
-        cipher.encrypt_block(&mut cur_block.into());
-
-        for i in 0..AES_BLOCKSIZE {
-            plaintext[idx + i] = cur_block[i];
-        }
-        last_ciphertext = cur_block;
+        let cur_block = GenericArray::<u8, typenum::U16>::from_mut_slice(
+            &mut plaintext[idx..idx + AES_BLOCKSIZE],
+        );
+        xor_mut(cur_block, &last_ciphertext);
+        cipher.encrypt_block(cur_block);
+        last_ciphertext = (*cur_block).into();
     }
 
     Ok(plaintext)
 }
 
 pub fn cbc_decrypt<'a>(
-    cipher: Aes128,
+    cipher: &Aes128,
     iv: &[u8; AES_BLOCKSIZE],
     ciphertext: &'a mut Vec<u8>,
 ) -> Result<&'a mut Vec<u8>, &'static str> {
-    if ciphertext.len() < 2 * AES_BLOCKSIZE || ciphertext.len() % AES_BLOCKSIZE != 0 {
+    if ciphertext.len() < AES_BLOCKSIZE || ciphertext.len() % AES_BLOCKSIZE != 0 {
         return Err("cbc decrypt failed");
     }
 
-    let mut last_plaintext: [u8; AES_BLOCKSIZE] = *iv;
+    let mut last_ciphertext: [u8; AES_BLOCKSIZE] = *iv;
     for idx in (0..ciphertext.len()).step_by(AES_BLOCKSIZE) {
-        let mut cur_block: [u8; AES_BLOCKSIZE] = [0; AES_BLOCKSIZE];
-        for i in 0..AES_BLOCKSIZE {
-            cur_block[i] = ciphertext[idx + i];
-        }
-        cipher.decrypt_block(&mut cur_block.into());
-        xor_mut(&mut cur_block, &last_plaintext);
-        for i in 0..AES_BLOCKSIZE {
-            ciphertext[idx + i] = cur_block[i];
-        }
-
-        last_plaintext = cur_block;
+        let cur_block = GenericArray::<u8, typenum::U16>::from_mut_slice(
+            &mut ciphertext[idx..idx + AES_BLOCKSIZE],
+        );
+        let cur_block_copy = cur_block.clone();
+        cipher.decrypt_block(cur_block);
+        xor_mut(cur_block, &last_ciphertext);
+        last_ciphertext = cur_block_copy.into();
     }
 
     Ok(ciphertext)
@@ -312,6 +300,8 @@ mod tests {
         io::{BufRead, BufReader},
         usize,
     };
+
+    use aes::cipher::KeyInit;
 
     use super::*;
 
@@ -434,7 +424,9 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
     #[test]
     fn challenge7() {
         let ciphertext = read_b64_lines("testdata/7.txt");
-        let blocks = aes_ecb_decrypt(&ciphertext);
+        let key = GenericArray::from_slice("YELLOW SUBMARINE".as_bytes());
+        let cipher = Aes128::new(&key);
+        let blocks = aes_ecb_decrypt(&cipher, &ciphertext);
         println!("{}", String::from_utf8(blocks).unwrap());
     }
 
@@ -470,5 +462,30 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
         let expected = Vec::from("YELLOW SUBMARINE\x04\x04\x04\x04");
         const LEN: usize = 20;
         assert_eq!(expected, *pad_pkcs7::<LEN>(&mut sub));
+
+        let key = GenericArray::from_slice("YELLOW SUBMARINE".as_bytes());
+        let cipher = Aes128::new(&key);
+        let plain_cases: Vec<Vec<u8>> = vec![
+            "123abc".into(),
+            "12345678abcdefgh".into(),
+            "12345678abcdefghi".into(),
+            "yellow_submarineyellow_submarine".into(),
+        ];
+        let iv_cases = vec![
+            [0; AES_BLOCKSIZE],
+            [42; AES_BLOCKSIZE],
+            [0xa5; AES_BLOCKSIZE],
+        ];
+
+        for mut plaintext in plain_cases {
+            for iv in &iv_cases {
+                let plaintext_copy = plaintext.clone();
+                let padded = pad_pkcs7::<AES_BLOCKSIZE>(&mut plaintext);
+                let ciphertext = cbc_encrypt(&cipher, &iv, padded).unwrap();
+                cbc_decrypt(&cipher, &iv, ciphertext).unwrap();
+                let unpadded = unpad_pkcs7::<AES_BLOCKSIZE>(ciphertext).unwrap();
+                assert_eq!(*unpadded, plaintext_copy);
+            }
+        }
     }
 }
