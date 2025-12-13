@@ -1,7 +1,4 @@
-use aes::{
-    Aes128,
-    cipher::{BlockDecrypt, BlockEncrypt, BlockSizeUser, generic_array::GenericArray, typenum},
-};
+use aes::cipher::{BlockDecrypt, BlockEncrypt, BlockSizeUser, generic_array::GenericArray};
 use base64::prelude::*;
 use hex;
 use std::{
@@ -309,7 +306,7 @@ mod tests {
         usize,
     };
 
-    use aes::cipher::KeyInit;
+    use aes::{Aes128, cipher::KeyInit};
 
     use super::*;
 
