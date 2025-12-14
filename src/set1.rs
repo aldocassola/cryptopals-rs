@@ -1,6 +1,9 @@
-use aes::cipher::{BlockDecrypt, BlockEncrypt, BlockSizeUser, generic_array::GenericArray};
+use aes::cipher::{
+    BlockDecrypt, BlockEncrypt, BlockSizeUser, KeyInit, generic_array::GenericArray,
+};
 use base64::prelude::*;
 use hex;
+use rand::{Rng, RngCore, distr::Uniform};
 use std::{
     collections::{BinaryHeap, HashMap},
     fs::File,
@@ -201,15 +204,31 @@ pub fn read_hex_lines(filename: &str) -> Vec<Vec<u8>> {
 
 const AES_BLOCKSIZE: usize = 16;
 
-pub fn aes_encrypt<C: BlockEncrypt + BlockSizeUser + Sized>(cipher: &C, plaintext: &mut [u8]) {
+pub fn block_encrypt<C: BlockEncrypt + BlockSizeUser + Sized>(cipher: &C, plaintext: &mut [u8]) {
     cipher.encrypt_block(GenericArray::from_mut_slice(plaintext));
 }
 
-pub fn aes_decrypt<C: BlockDecrypt + BlockSizeUser + Sized>(cipher: &C, ciphertext: &mut [u8]) {
+pub fn block_decrypt<C: BlockDecrypt + BlockSizeUser + Sized>(cipher: &C, ciphertext: &mut [u8]) {
     cipher.decrypt_block(GenericArray::from_mut_slice(ciphertext));
 }
 
-pub fn aes_ecb_decrypt<C: BlockDecrypt + BlockSizeUser + Sized>(
+pub fn aes_ecb_encrypt<C: BlockEncrypt + BlockSizeUser + Sized>(
+    cipher: &C,
+    plaintext: &[u8],
+) -> Vec<u8> {
+    let mut result = vec![];
+    let mut block = vec![0u8; C::block_size()];
+
+    for idx in (0..plaintext.len()).step_by(C::block_size()) {
+        block.copy_from_slice(&plaintext[idx..idx + C::block_size()]);
+        block_encrypt(cipher, &mut block);
+        result.append(&mut block.to_vec());
+    }
+
+    result
+}
+
+pub fn ecb_decrypt<C: BlockDecrypt + BlockSizeUser + Sized>(
     cipher: &C,
     ciphertext: &[u8],
 ) -> Vec<u8> {
@@ -217,35 +236,51 @@ pub fn aes_ecb_decrypt<C: BlockDecrypt + BlockSizeUser + Sized>(
     let mut block = vec![0u8; <C as BlockSizeUser>::block_size()];
 
     for idx in (0..ciphertext.len()).step_by(C::block_size()) {
-        for b_idx in 0..block.len() {
-            block[b_idx] = ciphertext[idx + b_idx]
-        }
-        aes_decrypt(cipher, &mut block);
+        block.copy_from_slice(&ciphertext[idx..idx + C::block_size()]);
+        block_decrypt(cipher, &mut block);
         result.append(&mut block.to_vec());
     }
     result
 }
 
-pub fn pad_pkcs7<const BLOCKSIZE: usize>(input: &mut Vec<u8>) -> &mut Vec<u8> {
-    let padding_length = BLOCKSIZE - input.len() % BLOCKSIZE;
+//is_ecb_ciphertext returns the block index found repeating if ECB, None otherwise
+pub fn is_ecb_ciphertext(input: &[u8]) -> Option<usize> {
+    let mut block_map = HashMap::<&[u8], usize>::new();
+    for idx in (0..input.len()).step_by(AES_BLOCKSIZE) {
+        let v = &input[idx..idx + AES_BLOCKSIZE];
+        match block_map.get(v) {
+            Some(block_idx) => {
+                return Some(*block_idx);
+            }
+            None => {
+                block_map.insert(v, idx);
+            }
+        }
+    }
+
+    None
+}
+
+pub fn pad_pkcs7<C: BlockSizeUser + Sized>(input: &mut Vec<u8>) -> &mut Vec<u8> {
+    let padding_length = C::block_size() - input.len() % C::block_size();
     let mut pad = vec![padding_length as u8; padding_length];
     input.append(&mut pad);
     input
 }
 
-pub fn unpad_pkcs7<const BLOCKSIZE: usize>(
+pub fn unpad_pkcs7<C: BlockSizeUser + Sized>(
     input: &mut Vec<u8>,
 ) -> Result<&mut Vec<u8>, &'static str> {
-    let mut check_good = input.len() % AES_BLOCKSIZE == 0;
+    let mut check_good = input.len() % C::block_size() == 0;
 
-    if input.len() < AES_BLOCKSIZE {
+    if input.len() < C::block_size() {
         check_good = false;
     }
 
-    let last_block = &input[input.len() - AES_BLOCKSIZE..];
-    let last_byte = last_block[AES_BLOCKSIZE - 1];
-    check_good = check_good && last_byte <= 16;
-    let maybe_pad = &last_block[AES_BLOCKSIZE - last_byte as usize..];
+    let last_block = &input[input.len() - C::block_size()..];
+    let last_byte = last_block[C::block_size() - 1];
+    check_good = check_good && last_byte <= C::block_size() as u8;
+    let maybe_pad = &last_block[C::block_size() - last_byte as usize..];
     let all_bytes = maybe_pad.iter().all(|e| *e == last_byte);
 
     if !check_good || !all_bytes {
@@ -298,6 +333,40 @@ pub fn cbc_decrypt<'a, C: BlockSizeUser + BlockDecrypt + Sized>(
     Ok(ciphertext)
 }
 
+pub fn make_ecb_cbc_oracle<C: KeyInit + BlockEncrypt + BlockDecrypt + BlockSizeUser + Sized>()
+-> impl FnMut(&[u8]) -> Vec<u8> {
+    let mut key = vec![0u8; C::block_size()];
+    let mut rng = rand::rng();
+    let distr5_10 = Uniform::new(5usize, 11).unwrap();
+    let coin_flip = Uniform::new(0, 2).unwrap();
+
+    rng.fill_bytes(&mut key);
+
+    let cipher = C::new(GenericArray::from_slice(&key));
+    let oracle = move |input: &[u8]| -> Vec<u8> {
+        let before_len: usize = rng.sample(distr5_10);
+        let after_len: usize = rng.sample(distr5_10);
+        let mut iv = vec![0u8; C::block_size()];
+        let mut blocks = vec![0u8; before_len + after_len + input.len()];
+
+        rng.fill_bytes(&mut blocks[0..before_len]);
+        blocks[before_len..before_len + input.len()].copy_from_slice(input);
+        rng.fill_bytes(&mut blocks[before_len + input.len()..]);
+        rng.fill_bytes(&mut iv);
+        let padded = pad_pkcs7::<C>(&mut blocks);
+
+        let ecb_or_cbc = rng.sample(coin_flip);
+
+        if ecb_or_cbc == 0 {
+            return aes_ecb_encrypt(&cipher, &padded);
+        } else {
+            return aes_ecb_encrypt(&cipher, &padded);
+        }
+    };
+
+    oracle
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -306,7 +375,10 @@ mod tests {
         usize,
     };
 
-    use aes::{Aes128, cipher::KeyInit};
+    use aes::{
+        Aes128,
+        cipher::{KeyInit, typenum},
+    };
 
     use super::*;
 
@@ -431,32 +503,23 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
         let ciphertext = read_b64_lines("testdata/7.txt");
         let key = GenericArray::from_slice("YELLOW SUBMARINE".as_bytes());
         let cipher = Aes128::new(&key);
-        let blocks = aes_ecb_decrypt(&cipher, &ciphertext);
+        let blocks = ecb_decrypt(&cipher, &ciphertext);
         println!("{}", String::from_utf8(blocks).unwrap());
     }
 
     #[test]
     fn challenge8() {
-        let mut block_map: HashMap<&[u8], usize> = HashMap::new();
         let lines = read_hex_lines("testdata/8.txt");
 
         for (lnum, line) in lines.iter().enumerate() {
-            for idx in (0..line.len()).step_by(AES_BLOCKSIZE) {
-                let v = &line[idx..idx + AES_BLOCKSIZE];
-                match block_map.get(v) {
-                    Some(lnum) => {
-                        println!(
-                            "AES ECB found on line ({}:{}):{:?}\n repeating block:{:?}",
-                            lnum,
-                            idx,
-                            hex::encode(&lines[*lnum]),
-                            hex::encode(v),
-                        )
-                    }
-                    None => {
-                        block_map.insert(v, lnum);
-                    }
-                }
+            match is_ecb_ciphertext(&line) {
+                Some(idx) => println!(
+                    "ECB found in line ({}:{}) with block {:?}",
+                    lnum,
+                    idx,
+                    hex::encode(&line[idx..idx + AES_BLOCKSIZE]),
+                ),
+                None => continue,
             }
         }
     }
@@ -465,8 +528,11 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
     fn challenge9() {
         let mut sub = Vec::from("YELLOW SUBMARINE");
         let expected = Vec::from("YELLOW SUBMARINE\x04\x04\x04\x04");
-        const LEN: usize = 20;
-        assert_eq!(expected, *pad_pkcs7::<LEN>(&mut sub));
+        struct TwentyBlockSize {}
+        impl BlockSizeUser for TwentyBlockSize {
+            type BlockSize = typenum::U20;
+        }
+        assert_eq!(expected, *pad_pkcs7::<TwentyBlockSize>(&mut sub));
     }
 
     #[test]
@@ -488,10 +554,10 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
         for mut plaintext in plain_cases {
             for iv in &iv_cases {
                 let plaintext_copy = plaintext.clone();
-                let padded = pad_pkcs7::<AES_BLOCKSIZE>(&mut plaintext);
+                let padded = pad_pkcs7::<Aes128>(&mut plaintext);
                 let ciphertext = cbc_encrypt(&cipher, &iv, padded).unwrap();
                 cbc_decrypt(&cipher, &iv, ciphertext).unwrap();
-                let unpadded = unpad_pkcs7::<AES_BLOCKSIZE>(ciphertext).unwrap();
+                let unpadded = unpad_pkcs7::<Aes128>(ciphertext).unwrap();
                 assert_eq!(*unpadded, plaintext_copy);
             }
         }
@@ -500,5 +566,14 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
         let iv = [0; 16];
         let file_plaintext = cbc_decrypt(&cipher, &iv, &mut file_ciphertext).unwrap();
         println!("{}", String::from_utf8(file_plaintext.to_vec()).unwrap());
+    }
+
+    #[test]
+    fn challenge11() {
+        let mut encrypt_oracle = make_ecb_cbc_oracle::<Aes128>();
+        let plaintext = vec!['A' as u8; 64];
+        for _ in (0..10) {
+            let ct = encrypt_oracle(&plaintext);
+        }
     }
 }
