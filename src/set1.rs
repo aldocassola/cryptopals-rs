@@ -4,7 +4,7 @@ use hex;
 use std::{
     collections::{BinaryHeap, HashMap},
     fs::File,
-    io::{BufRead, Read},
+    io::{BufRead, BufReader, Read},
 };
 
 pub fn hex_to_base64(input: &str) -> String {
@@ -172,31 +172,32 @@ pub fn make_key_length_distance(input: &[u8]) -> LengthDistVec {
     heap.into_sorted_vec()
 }
 
-pub fn read_b64_lines(filename: &str) -> Vec<u8> {
-    let mut b64encrypted = Vec::<u8>::new();
-    File::open(filename)
-        .unwrap()
-        .read_to_end(&mut b64encrypted)
-        .unwrap();
+pub fn parse_b64_lines<T: BufRead>(input: T) -> Vec<u8> {
     BASE64_STANDARD
-        .decode(&b64encrypted.lines().fold(Vec::<u8>::new(), |mut vec, ln| {
+        .decode(input.lines().fold(vec![], |mut vec, ln| {
             vec.append(&mut ln.unwrap().into_bytes());
             vec
         }))
         .unwrap()
 }
 
-pub fn read_hex_lines(filename: &str) -> Vec<Vec<u8>> {
-    let mut hexdata = Vec::<u8>::new();
-    File::open(filename)
-        .unwrap()
-        .read_to_end(&mut hexdata)
-        .unwrap();
+pub fn parse_b64_file_lines(filename: &str) -> Vec<u8> {
+    let infile = File::open(filename).unwrap();
+    parse_b64_lines(BufReader::new(infile))
+}
 
-    hexdata
+pub fn parse_hex_lines<T: BufRead>(rd: T) -> Vec<u8> {
+    rd.lines().fold(vec![], |mut acc, ln| {
+        acc.append(&mut hex::decode(ln.unwrap()).unwrap());
+        acc
+    })
+}
+
+pub fn read_hex_lines(filename: &str) -> Vec<Vec<u8>> {
+    BufReader::new(File::open(filename).unwrap())
         .lines()
         .map(|ln| hex::decode(ln.unwrap()).unwrap())
-        .collect::<Vec<_>>()
+        .collect()
 }
 
 const AES_BLOCKSIZE: usize = 16;
@@ -354,7 +355,7 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
         let s1 = "this is a test";
         let s2 = "wokka wokka!!!";
         assert_eq!(hamming_distance(s1.as_bytes(), s2.as_bytes()), 37);
-        let ciphertext = read_b64_lines("testdata/6.txt");
+        let ciphertext = parse_b64_file_lines("testdata/6.txt");
         let weights = make_key_length_distance(&ciphertext);
         println!("Weights: {:?}", weights);
 
@@ -387,7 +388,7 @@ a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
 
     #[test]
     fn challenge7() {
-        let ciphertext = read_b64_lines("testdata/7.txt");
+        let ciphertext = parse_b64_file_lines("testdata/7.txt");
         let key = GenericArray::from_slice("YELLOW SUBMARINE".as_bytes());
         let cipher = Aes128::new(&key);
         let blocks = ecb_decrypt(&cipher, &ciphertext);
