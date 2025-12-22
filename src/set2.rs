@@ -2,8 +2,9 @@ use aes::cipher::{
     BlockDecrypt, BlockEncrypt, BlockSizeUser, KeyInit, generic_array::GenericArray,
 };
 use rand::{Rng, RngCore, distr::Uniform};
+use std::io::Cursor;
 
-use crate::set1::xor_mut;
+use crate::set1::{ecb_encrypt, xor_mut};
 
 pub fn pad_pkcs7<C: BlockSizeUser + Sized>(input: &mut Vec<u8>) -> &mut Vec<u8> {
     let padding_length = C::block_size() - input.len() % C::block_size();
@@ -93,7 +94,7 @@ pub fn make_ecb_cbc_oracle<C: KeyInit + BlockEncrypt + BlockDecrypt + BlockSizeU
     rng.fill_bytes(&mut key);
 
     let cipher = C::new(GenericArray::from_slice(&key));
-    let oracle = move |input: &[u8]| -> Vec<u8> {
+    move |input: &[u8]| -> Vec<u8> {
         let before_len: usize = rng.sample(distr5_10);
         let after_len: usize = rng.sample(distr5_10);
         let mut iv = vec![0u8; C::block_size()];
@@ -112,9 +113,28 @@ pub fn make_ecb_cbc_oracle<C: KeyInit + BlockEncrypt + BlockDecrypt + BlockSizeU
         } else {
             return cbc_encrypt(&cipher, &iv, &mut padded).unwrap().to_vec();
         }
-    };
+    }
+}
 
-    oracle
+pub fn make_ecb_encrypt_oracle<C: BlockEncrypt + BlockSizeUser + KeyInit>()
+-> impl Fn(&[u8]) -> Vec<u8> {
+    let mut key = vec![0u8; C::block_size()];
+    let mut rng = rand::rng();
+    rng.fill_bytes(&mut key);
+    let cipher = C::new(GenericArray::from_slice(&key));
+
+    move |input| {
+        let b64_secret = b"Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkg
+aGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBq
+dXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUg
+YnkK";
+        let bytes_secret = crate::set1::parse_b64_lines(Cursor::new(b64_secret));
+        let mut plaintext = vec![0u8; input.len() + bytes_secret.len()];
+        plaintext[0..input.len()].copy_from_slice(input);
+        plaintext[input.len()..].copy_from_slice(&bytes_secret);
+        let padded = pad_pkcs7::<C>(&mut plaintext);
+        ecb_encrypt(&cipher, padded)
+    }
 }
 
 #[cfg(test)]
@@ -169,7 +189,7 @@ mod tests {
             }
         }
 
-        let mut file_ciphertext = crate::set1::read_b64_lines("testdata/10.txt");
+        let mut file_ciphertext = crate::set1::parse_b64_file_lines("testdata/10.txt");
         let iv = [0; 16];
         let file_plaintext = crate::set2::cbc_decrypt(&cipher, &iv, &mut file_ciphertext).unwrap();
         println!("{}", String::from_utf8(file_plaintext.to_vec()).unwrap());
