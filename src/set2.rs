@@ -86,7 +86,7 @@ pub fn cbc_decrypt<'a, C: BlockSizeUser + BlockDecrypt + Sized>(
 
 pub fn make_ecb_cbc_oracle<C: KeyInit + BlockEncrypt + BlockDecrypt + BlockSizeUser + Sized>()
 -> impl FnMut(&[u8]) -> Vec<u8> {
-    let mut key = vec![0u8; C::block_size()];
+    let mut key = vec![0u8; C::key_size()];
     let mut rng = rand::rng();
     let distr5_10 = Uniform::new(5usize, 11).unwrap();
     let coin_flip = Uniform::new(0, 2).unwrap();
@@ -118,7 +118,7 @@ pub fn make_ecb_cbc_oracle<C: KeyInit + BlockEncrypt + BlockDecrypt + BlockSizeU
 
 pub fn make_ecb_encrypt_oracle<C: BlockEncrypt + BlockSizeUser + KeyInit>()
 -> impl Fn(&[u8]) -> Vec<u8> {
-    let mut key = vec![0u8; C::block_size()];
+    let mut key = vec![0u8; C::key_size()];
     let mut rng = rand::rng();
     rng.fill_bytes(&mut key);
     let cipher = C::new(GenericArray::from_slice(&key));
